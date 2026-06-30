@@ -1,0 +1,11 @@
+torch
+torchvision
+fastapi
+uvicorn[standard]
+python-multipart
+pillow
+opencv-python-headless
+numpy
+pydantic
+# SAM2 installed separately via:
+# pip install git+https://github.com/facebookresearch/sam2.git

@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Diamond Counter — Review UI</title>
+<style>
+  :root {
+    --round: #4cc9f0;
+    --marquise: #f72585;
+    --baguette: #ffd166;
+    --unknown: #888;
+    --bg: #111317;
+    --panel: #1a1d23;
+    --border: #2a2e37;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: #eee; display: flex; height: 100vh; overflow: hidden;
+  }
+  #sidebar {
+    width: 320px; background: var(--panel); border-right: 1px solid var(--border);
+    padding: 16px; overflow-y: auto; flex-shrink: 0;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #toolbar {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  #canvas-wrap { flex: 1; overflow: auto; position: relative; background: #0a0a0a; }
+  canvas { cursor: crosshair; display: block; }
+  button {
+    background: #2a2e37; color: #eee; border: 1px solid #3a3f4a; border-radius: 6px;
+    padding: 7px 12px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #353a45; }
+  button.active { background: #3a6df0; border-color: #3a6df0; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  h3 { margin: 4px 0 10px; font-size: 14px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+  .count-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  .total-box {
+    background: #20242c; border-radius: 8px; padding: 12px; margin-bottom: 14px;
+    border: 1px solid var(--border);
+  }
+  .total-box .num { font-size: 32px; font-weight: 700; color: #4cc9f0; }
+  #upload-box {
+    border: 2px dashed var(--border); border-radius: 8px; padding: 30px;
+    text-align: center; margin-bottom: 16px; cursor: pointer;
+  }
+  #upload-box:hover { border-color: #3a6df0; }
+  .mask-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-radius: 6px; font-size: 12px; margin-bottom: 3px;
+    background: #20242c; cursor: pointer;
+  }
+  .mask-item:hover { background: #262b34; }
+  .mask-item.selected { background: #2c3e6b; }
+  select { background: #2a2e37; color: #eee; border: 1px solid #3a3f4a; border-radius: 4px; padding: 3px; font-size: 11px; }
+  #status { font-size: 12px; color: #999; padding: 6px 16px; }
+  #mode-hint { font-size: 12px; color: #f0a830; padding: 4px 16px; min-height: 16px; }
+  .legend { display: flex; gap: 12px; font-size: 12px; margin-bottom: 10px; }
+  .legend span { display: flex; align-items: center; }
+  #mask-list { max-height: 260px; overflow-y: auto; margin-top: 8px; }
+  hr { border-color: var(--border); margin: 16px 0; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Upload</h3>
+  <div id="upload-box">
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+    <div id="upload-text">Click to upload necklace image</div>
+  </div>
+
+  <div class="total-box">
+    <div class="num" id="total-count">0</div>
+    <div>Total diamonds</div>
+  </div>
+
+  <h3>By Shape</h3>
+  <div id="counts-by-shape"></div>
+
+  <hr>
+  <h3>Mask List (<span id="mask-list-count">0</span>)</h3>
+  <div id="mask-list"></div>
+
+  <hr>
+  <button id="export-btn" style="width:100%">Export JSON</button>
+</div>
+
+<div id="main">
+  <div id="toolbar">
+    <button id="mode-select" class="active">Select</button>
+    <button id="mode-click-add">Click-Add Diamond</button>
+    <button id="mode-split">Split Mode</button>
+    <button id="btn-merge" disabled>Merge Selected</button>
+    <button id="btn-delete" disabled>Delete Selected</button>
+    <span style="flex:1"></span>
+    <label>Relabel selected:
+      <select id="relabel-select" disabled>
+        <option value="round">Round</option>
+        <option value="marquise">Marquise</option>
+        <option value="baguette">Baguette</option>
+        <option value="unknown">Unknown</option>
+      </select>
+    </label>
+    <button id="btn-toggle-overlay">Hide Overlay</button>
+  </div>
+  <div id="mode-hint"></div>
+  <div id="status">No image loaded.</div>
+  <div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+</div>
+
+<script>
+const SHAPE_COLORS = { round: '#4cc9f0', marquise: '#f72585', baguette: '#ffd166', unknown: '#888888' };
+
+let sessionId = null;
+let img = new Image();
+let masks = [];
+let selectedIds = new Set();
+let mode = 'select'; // select | click-add | split
+let splitPoints = [];
+let overlayVisible = true;
+let scale = 1;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+document.getElementById('upload-box').onclick = () => document.getElementById('file-input').click();
+document.getElementById('file-input').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  await uploadImage(file);
+};
+
+async function uploadImage(file) {
+  setStatus('Uploading and running SAM2 segmentation... this can take 10-30s on a T4.');
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch('/api/upload', { method: 'POST', body: formData });
+  if (!res.ok) { setStatus('Upload failed: ' + (await res.text())); return; }
+  const data = await res.json();
+  sessionId = data.session_id;
+  masks = data.masks;
+
+  img = new Image();
+  img.onload = () => {
+    setupCanvas(data.width, data.height);
+    draw();
+  };
+  img.src = data.image_url;
+
+  setStatus(`Loaded. ${masks.length} candidate masks found — review and clean up below.`);
+  refreshSidebar();
+}
+
+function setupCanvas(w, h) {
+  const wrap = document.getElementById('canvas-wrap');
+  const maxW = wrap.clientWidth - 20;
+  scale = Math.min(1, maxW / w);
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+}
+
+function setStatus(msg) { document.getElementById('status').innerText = msg; }
+function setHint(msg) { document.getElementById('mode-hint').innerText = msg; }
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  if (!overlayVisible) return;
+
+  for (const m of masks) {
+    const color = SHAPE_COLORS[m.shape] || SHAPE_COLORS.unknown;
+    const isSelected = selectedIds.has(m.id);
+    ctx.beginPath();
+    m.polygon.forEach(([x, y], i) => {
+      const px = x * scale, py = y * scale;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    ctx.fillStyle = color + (isSelected ? '66' : '33');
+    ctx.fill();
+    ctx.strokeStyle = isSelected ? '#ffffff' : color;
+    ctx.lineWidth = isSelected ? 2.5 : 1.2;
+    ctx.stroke();
+  }
+
+  // draw in-progress split line
+  if (mode === 'split' && splitPoints.length > 0) {
+    ctx.beginPath();
+    splitPoints.forEach(([x, y], i) => {
+      if (i === 0) ctx.moveTo(x * scale, y * scale); else ctx.lineTo(x * scale, y * scale);
+    });
+    ctx.strokeStyle = '#ff3344';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+function findMaskAt(x, y) {
+  // x,y in original image coords. Find topmost mask whose polygon contains the point.
+  for (let i = masks.length - 1; i >= 0; i--) {
+    if (pointInPolygon([x, y], masks[i].polygon)) return masks[i];
+  }
+  return null;
+}
+
+function pointInPolygon(point, vs) {
+  let x = point[0], y = point[1];
+  let inside = false;
+  for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+    let xi = vs[i][0], yi = vs[i][1];
+    let xj = vs[j][0], yj = vs[j][1];
+    let intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+canvas.addEventListener('click', async (e) => {
+  if (!sessionId) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) / scale;
+  const cy = (e.clientY - rect.top) / scale;
+
+  if (mode === 'select') {
+    const m = findMaskAt(cx, cy);
+    if (m) {
+      if (selectedIds.has(m.id)) selectedIds.delete(m.id);
+      else selectedIds.add(m.id);
+      draw();
+      updateToolbarState();
+      highlightListItem();
+    }
+  } else if (mode === 'click-add') {
+    setStatus('Segmenting at click point...');
+    const res = await fetch('/api/click_segment', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, x: cx, y: cy })
+    });
+    if (res.ok) {
+      const newMask = await res.json();
+      masks.push(newMask);
+      draw();
+      refreshSidebar();
+      setStatus(`Added 1 mask. Total: ${masks.length}`);
+    } else {
+      setStatus('No diamond detected at that point.');
+    }
+  } else if (mode === 'split') {
+    splitPoints.push([cx, cy]);
+    draw();
+    if (splitPoints.length >= 2) {
+      setHint('Click "Finish Split" in toolbar, or keep adding points for a curved cut.');
+    }
+  }
+});
+
+document.getElementById('mode-select').onclick = () => setMode('select');
+document.getElementById('mode-click-add').onclick = () => setMode('click-add');
+document.getElementById('mode-split').onclick = () => {
+  if (selectedIds.size !== 1) {
+    alert('Select exactly one mask first, then enable Split Mode and click points across it to cut it.');
+    return;
+  }
+  setMode('split');
+};
+
+function setMode(m) {
+  mode = m;
+  splitPoints = [];
+  ['mode-select', 'mode-click-add', 'mode-split'].forEach(id => {
+    document.getElementById(id).classList.remove('active');
+  });
+  document.getElementById('mode-' + m).classList.add('active');
+  if (m === 'select') setHint('Click a mask to select. Click again to deselect. Select 2+ to merge.');
+  if (m === 'click-add') setHint('Click anywhere on a missed diamond to segment it with SAM2.');
+  if (m === 'split') setHint('Click 2+ points to draw a cut line across the selected mask, then press Finish Split.');
+  draw();
+}
+
+document.getElementById('btn-merge').onclick = async () => {
+  if (selectedIds.size < 2) return;
+  const ids = Array.from(selectedIds);
+  const res = await fetch('/api/merge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, mask_ids: ids })
+  });
+  if (res.ok) {
+    masks = masks.filter(m => !ids.includes(m.id));
+    const newMask = await res.json();
+    masks.push(newMask);
+    selectedIds.clear();
+    draw(); refreshSidebar(); updateToolbarState();
+    setStatus(`Merged ${ids.length} masks into 1.`);
+  }
+};
+
+document.getElementById('btn-delete').onclick = async () => {
+  if (selectedIds.size === 0) return;
+  const ids = Array.from(selectedIds);
+  const res = await fetch('/api/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, mask_ids: ids })
+  });
+  if (res.ok) {
+    masks = masks.filter(m => !ids.includes(m.id));
+    selectedIds.clear();
+    draw(); refreshSidebar(); updateToolbarState();
+    setStatus(`Deleted ${ids.length} masks.`);
+  }
+};
+
+document.getElementById('relabel-select').onchange = async (e) => {
+  const shape = e.target.value;
+  for (const id of selectedIds) {
+    const res = await fetch('/api/relabel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, mask_id: id, shape })
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      const idx = masks.findIndex(m => m.id === id);
+      if (idx >= 0) masks[idx] = updated;
+    }
+  }
+  draw(); refreshSidebar();
+};
+
+document.getElementById('btn-toggle-overlay').onclick = (e) => {
+  overlayVisible = !overlayVisible;
+  e.target.innerText = overlayVisible ? 'Hide Overlay' : 'Show Overlay';
+  draw();
+};
+
+document.getElementById('export-btn').onclick = async () => {
+  if (!sessionId) return;
+  const res = await fetch(`/api/export/${sessionId}`);
+  const data = await res.json();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `diamond_count_${sessionId}.json`;
+  a.click();
+};
+
+// Finish-split: add a temporary button dynamically when in split mode with points
+let finishSplitBtn = null;
+function ensureFinishSplitButton() {
+  if (finishSplitBtn) return;
+  finishSplitBtn = document.createElement('button');
+  finishSplitBtn.innerText = 'Finish Split';
+  finishSplitBtn.onclick = async () => {
+    if (splitPoints.length < 2 || selectedIds.size !== 1) return;
+    const maskId = Array.from(selectedIds)[0];
+    const res = await fetch('/api/split', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, mask_id: maskId, split_line: splitPoints })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      masks = masks.filter(m => m.id !== maskId);
+      masks.push(...data.new_masks);
+      selectedIds.clear();
+      splitPoints = [];
+      setMode('select');
+      draw(); refreshSidebar(); updateToolbarState();
+      setStatus(`Split into ${data.new_masks.length} masks.`);
+    } else {
+      const err = await res.text();
+      alert('Split failed: ' + err);
+    }
+  };
+  document.getElementById('toolbar').appendChild(finishSplitBtn);
+}
+ensureFinishSplitButton();
+
+function updateToolbarState() {
+  document.getElementById('btn-merge').disabled = selectedIds.size < 2;
+  document.getElementById('btn-delete').disabled = selectedIds.size === 0;
+  document.getElementById('relabel-select').disabled = selectedIds.size === 0;
+}
+
+function refreshSidebar() {
+  const counts = {};
+  for (const m of masks) counts[m.shape] = (counts[m.shape] || 0) + 1;
+  document.getElementById('total-count').innerText = masks.length;
+
+  const cbsDiv = document.getElementById('counts-by-shape');
+  cbsDiv.innerHTML = '';
+  for (const [shape, color] of Object.entries(SHAPE_COLORS)) {
+    const c = counts[shape] || 0;
+    const row = document.createElement('div');
+    row.className = 'count-row';
+    row.innerHTML = `<span><span class="swatch" style="background:${color}"></span>${shape}</span><span>${c}</span>`;
+    cbsDiv.appendChild(row);
+  }
+
+  const listDiv = document.getElementById('mask-list');
+  listDiv.innerHTML = '';
+  document.getElementById('mask-list-count').innerText = masks.length;
+  masks.forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'mask-item' + (selectedIds.has(m.id) ? ' selected' : '');
+    item.innerHTML = `<span><span class="swatch" style="background:${SHAPE_COLORS[m.shape]}"></span>${m.shape} #${m.id}</span><span>${m.area}px</span>`;
+    item.onclick = () => {
+      if (selectedIds.has(m.id)) selectedIds.delete(m.id);
+      else selectedIds.add(m.id);
+      draw(); refreshSidebar(); updateToolbarState();
+    };
+    listDiv.appendChild(item);
+  });
+}
+
+function highlightListItem() {
+  refreshSidebar();
+  updateToolbarState();
+}
+
+setMode('select');
+</script>
+</body>
+</html>
